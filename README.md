@@ -1,13 +1,18 @@
 # 河牌 · 局域网德州扑克
 
-## 启动
+## 一键启动
 
-```bash
-python3 -m pip install -r requirements.txt
-python3 server.py
-```
+启动脚本会检查并安装 [uv](https://docs.astral.sh/uv/)，使用 Python 3.12 在项目目录创建 `.venv`，再根据 `uv.lock` 下载并安装锁定版本的依赖。首次启动需要网络连接；以后重复运行会复用已安装的环境。
 
-房主打开 `http://localhost:8765`。同一局域网的朋友打开 `http://房主IP:8765`，输入房间码加入。房主在牌桌右上角点击「邀请」可复制局域网邀请链接。如果连接失败，检查防火墙是否允许 TCP 8765。
+**Linux：** 在项目目录运行 `./start.sh`。如果文件没有可执行权限，先运行 `chmod +x start.sh`，或者直接运行 `bash start.sh`。
+
+**Windows：** 双击 `start.bat`，或在命令提示符中运行 `start.bat`。首次安装 uv 时需要可用的 PowerShell。
+
+启动后，房主打开 `http://localhost:8765`。按 `Ctrl+C` 停止服务。
+
+依赖由 `pyproject.toml` 声明，并由跨平台的 `uv.lock` 固定版本。已有 uv 时，也可以手动运行 `uv sync --locked`，然后运行 `.venv/bin/python server.py`（Linux）或 `.venv\Scripts\python.exe server.py`（Windows）。
+
+同一局域网的朋友打开 `http://房主IP:8765`，输入房间码加入。房主在牌桌右上角点击「邀请」可复制局域网邀请链接。如果连接失败，检查防火墙是否允许 TCP 8765。
 
 ## 玩法
 
