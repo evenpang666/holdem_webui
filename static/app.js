@@ -157,11 +157,13 @@ function appendChat(message) {
   }
   if (atBottom || message.senderId === state?.you) list.scrollTop = list.scrollHeight;
 }
-function card(text, delay = 0, glowing = false) {
-  if (text === '??') return '<div class="card back"></div>';
+function card(text, delay = 0, glowing = false, dealt = false) {
+  const dealtClass = dealt ? ' dealt' : '';
+  const delayStyle = dealt ? ` style="animation-delay:${delay}ms"` : '';
+  if (text === '??') return `<div class="card back${dealtClass}"${delayStyle}></div>`;
   const rank = text[0] === 'T' ? '10' : text[0];
   const suit = {s:'♠',h:'♥',d:'♦',c:'♣'}[text[1]];
-  return `<div class="card ${'hd'.includes(text[1]) ? 'red' : ''} ${glowing ? 'best-card' : ''}" style="animation-delay:${delay}ms">${rank}<span>${suit}</span></div>`;
+  return `<div class="card ${'hd'.includes(text[1]) ? 'red' : ''}${glowing ? ' best-card' : ''}${dealtClass}"${delayStyle}>${rank}<span>${suit}</span></div>`;
 }
 const seatPositions = [[50,86],[25,79],[9,63],[13,38],[31,17],[50,11],[69,17],[87,38],[91,63],[75,79]];
 function render(next) {
@@ -192,20 +194,22 @@ function render(next) {
   $('pot').textContent = `¥${next.pot}`;
   $('hand-number').textContent = `第 ${next.handNo} 局 · 5 / 10 盲注`;
   $('street-label').textContent = {waiting:'等待开局',preflop:'翻牌前',flop:'翻牌圈',turn:'转牌圈',river:'河牌圈',complete:'本局结束'}[next.phase];
-  $('board').innerHTML = Array.from({length:5}, (_, i) => next.board[i] ? card(next.board[i], i * 65, glowingCards.has(next.board[i])) : '<div class="card empty"></div>').join('');
+  $('board').innerHTML = Array.from({length:5}, (_, i) => next.board[i] ? card(next.board[i], i * 65, glowingCards.has(next.board[i]), !!previous && (previous.handNo !== next.handNo || previous.board[i] !== next.board[i])) : '<div class="card empty"></div>').join('');
   const viewerIndex = Math.max(0, next.players.findIndex(p => p.id === next.you));
   const winnerIds = new Set((next.result?.pots || []).flatMap(p => p.winners));
   $('seat-layer').innerHTML = next.players.map((_, j) => {
     const p = next.players[(viewerIndex + j) % next.players.length];
+    const before = previous?.players.find(old => old.id === p.id);
     const position = seatPositions[Math.round(j * 10 / next.players.length)];
-    const classes = ['seat', next.turn === p.id ? 'active' : '', next.phase === 'complete' && winnerIds.has(p.id) ? 'winner' : '', p.stack === 0 ? 'bust' : '', p.folded ? 'folded' : ''].join(' ');
+    const myTurn = next.turn === next.you && p.id === next.you;
+    const classes = ['seat', next.turn === p.id ? 'active' : '', myTurn ? 'my-turn' : '', next.phase === 'complete' && winnerIds.has(p.id) ? 'winner' : '', p.stack === 0 ? 'bust' : '', p.folded ? 'folded' : ''].join(' ');
     const dealer = next.dealer === p.id ? '<span class="dealer-button">D</span>' : '';
     const status = p.stack === 0 && p.inHand ? '破产' : (p.lastAction || (p.bot ? '电脑玩家' : p.connected ? '已入座' : '离线'));
     const popup = actionPops.get(p.id);
     const kick = next.host === next.you && p.id !== next.you ? `<button class="kick-player" data-player-id="${escapeHTML(p.id)}" data-player-name="${escapeHTML(p.name)}" title="移出 ${escapeHTML(p.name)}" aria-label="移出 ${escapeHTML(p.name)}">×</button>` : '';
     const bestCards = next.result?.bestCards?.[p.id] || [];
     const handBadge = hands[p.id] ? bestCards.length ? `<button class="seat-hand ${selectedHandId === p.id ? 'selected' : ''}" data-hand-id="${escapeHTML(p.id)}" title="点击点亮最佳五张牌" aria-pressed="${selectedHandId === p.id}">牌型：${escapeHTML(hands[p.id])}</button>` : `<div class="seat-hand">牌型：${escapeHTML(hands[p.id])}</div>` : '';
-    return `<div class="${classes}" style="--x:${position[0]}%;--y:${position[1]}%">${popup?.until > now ? `<div class="action-pop">${escapeHTML(popup.label)}</div>` : ''}<div class="seat-head">${dealer}<span class="seat-name">${escapeHTML(p.name)}${p.id === next.you ? ' · 你' : ''}</span>${p.bot ? '<span class="seat-meta">AI</span>' : ''}${kick}</div><div class="seat-stack">¥${p.stack}</div><div class="seat-cards">${p.cards.map(c => card(c, 0, selectedHandId === p.id && glowingCards.has(c))).join('')}</div><div class="seat-action">${escapeHTML(status)}</div>${handBadge}${p.streetBet ? `<div class="seat-bet">● ¥${p.streetBet}</div>` : ''}</div>`;
+    return `<div class="${classes}" style="--x:${position[0]}%;--y:${position[1]}%">${popup?.until > now ? `<div class="action-pop">${escapeHTML(popup.label)}</div>` : ''}<div class="seat-head">${dealer}<span class="seat-name">${escapeHTML(p.name)}${p.id === next.you ? ' · 你' : ''}</span>${p.bot ? '<span class="seat-meta">AI</span>' : ''}${kick}</div><div class="seat-stack">¥${p.stack}</div><div class="seat-cards">${p.cards.map((c, i) => card(c, 0, selectedHandId === p.id && glowingCards.has(c), !!previous && (previous.handNo !== next.handNo || before?.cards[i] !== c))).join('')}</div><div class="seat-action">${myTurn ? '轮到你行动' : escapeHTML(status)}</div>${handBadge}${p.streetBet ? `<div class="seat-bet">● ¥${p.streetBet}</div>` : ''}</div>`;
   }).join('');
   const my = next.players.find(p => p.id === next.you);
   const actor = next.players.find(p => p.id === next.turn);
