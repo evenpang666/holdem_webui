@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>河牌 · 局域网德州扑克</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260925-chat-log">
-  <script src="/static/app.js?v=20260925-chat-log" defer></script>
+  <link rel="stylesheet" href="/static/style.css?v=20260925-seat-hands">
+  <script src="/static/app.js?v=20260925-seat-hands" defer></script>
 </head>
 <body>
   <main id="home" class="home">
@@ -43,7 +43,6 @@
           </div>
         </div>
       </div>
-      <section id="showdown" class="showdown hidden" aria-label="摊牌牌型"><div class="showdown-title">摊牌 · 点击玩家查看最佳五张牌</div><div id="showdown-players" class="showdown-players"></div></section>
       <section class="bottom-panel">
         <div class="status-block"><div class="panel-caption">当前牌局</div><div id="status-text" class="status-text">等待玩家加入</div><div id="hand-number" class="status-sub">第 0 局 · 5 / 10 盲注</div></div>
         <div id="host-controls" class="host-controls hidden"><label class="bot-speed" for="bot-speed"><span>电脑行动间隔 <strong id="bot-speed-value">1.1 秒</strong></span><input id="bot-speed" type="range" min="200" max="3000" step="100" value="1100" aria-label="电脑玩家行动间隔"><span class="speed-ends"><span>快</span><span>慢</span></span></label><button id="add-bot" class="button quiet">＋ 电脑玩家</button><button id="start-hand" class="button gold">开始发牌</button><button id="restart" class="restart-button" title="踢出所有玩家并重置游戏">重新开始</button></div>

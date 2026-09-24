@@ -203,10 +203,10 @@ function render(next) {
     const status = p.stack === 0 && p.inHand ? '破产' : (p.lastAction || (p.bot ? '电脑玩家' : p.connected ? '已入座' : '离线'));
     const popup = actionPops.get(p.id);
     const kick = next.host === next.you && p.id !== next.you ? `<button class="kick-player" data-player-id="${escapeHTML(p.id)}" data-player-name="${escapeHTML(p.name)}" title="移出 ${escapeHTML(p.name)}" aria-label="移出 ${escapeHTML(p.name)}">×</button>` : '';
-    return `<div class="${classes}" style="--x:${position[0]}%;--y:${position[1]}%">${popup?.until > now ? `<div class="action-pop">${escapeHTML(popup.label)}</div>` : ''}<div class="seat-head">${dealer}<span class="seat-name">${escapeHTML(p.name)}${p.id === next.you ? ' · 你' : ''}</span>${p.bot ? '<span class="seat-meta">AI</span>' : ''}${kick}</div><div class="seat-stack">¥${p.stack}</div><div class="seat-cards">${p.cards.map(c => card(c, 0, selectedHandId === p.id && glowingCards.has(c))).join('')}</div><div class="seat-action">${escapeHTML(status)}</div>${p.streetBet ? `<div class="seat-bet">● ¥${p.streetBet}</div>` : ''}</div>`;
+    const bestCards = next.result?.bestCards?.[p.id] || [];
+    const handBadge = hands[p.id] ? bestCards.length ? `<button class="seat-hand ${selectedHandId === p.id ? 'selected' : ''}" data-hand-id="${escapeHTML(p.id)}" title="点击点亮最佳五张牌" aria-pressed="${selectedHandId === p.id}">牌型：${escapeHTML(hands[p.id])}</button>` : `<div class="seat-hand">牌型：${escapeHTML(hands[p.id])}</div>` : '';
+    return `<div class="${classes}" style="--x:${position[0]}%;--y:${position[1]}%">${popup?.until > now ? `<div class="action-pop">${escapeHTML(popup.label)}</div>` : ''}<div class="seat-head">${dealer}<span class="seat-name">${escapeHTML(p.name)}${p.id === next.you ? ' · 你' : ''}</span>${p.bot ? '<span class="seat-meta">AI</span>' : ''}${kick}</div><div class="seat-stack">¥${p.stack}</div><div class="seat-cards">${p.cards.map(c => card(c, 0, selectedHandId === p.id && glowingCards.has(c))).join('')}</div><div class="seat-action">${escapeHTML(status)}</div>${handBadge}${p.streetBet ? `<div class="seat-bet">● ¥${p.streetBet}</div>` : ''}</div>`;
   }).join('');
-  $('showdown').classList.toggle('hidden', contenders.length === 0);
-  $('showdown-players').innerHTML = contenders.map(p => `<button class="showdown-player ${p.id === selectedHandId ? 'selected' : ''}" data-hand-id="${escapeHTML(p.id)}"><span>${escapeHTML(p.name)}</span><strong>${escapeHTML(hands[p.id])}</strong><small>${(next.result?.bestCards?.[p.id] || []).map(escapeHTML).join(' · ')}</small></button>`).join('');
   const my = next.players.find(p => p.id === next.you);
   const actor = next.players.find(p => p.id === next.turn);
   $('status-text').textContent = next.phase === 'waiting' ? '等待玩家加入' : next.phase === 'complete' ? (my?.stack === 0 ? '筹码已用尽，等待房主重新开始' : '本局结束，准备下一局') : actor ? `${actor.name} 正在行动` : '正在发牌';
@@ -296,15 +296,16 @@ $('bot-speed').oninput = () => {
 $('start-hand').onclick = () => send('start');
 $('restart').onclick = () => { if (confirm('重新开始会踢出所有其他玩家，并重置你的带入筹码。确定继续吗？')) send('restart'); };
 $('seat-layer').onclick = event => {
-  const button = event.target.closest('.kick-player');
-  if (!button) return;
-  if (confirm(`确定将 ${button.dataset.playerName} 移出房间吗？`)) send('kick', {playerId:button.dataset.playerId});
-};
-$('showdown-players').onclick = event => {
-  const button = event.target.closest('[data-hand-id]');
-  if (!button || !state) return;
-  selectedHandId = button.dataset.handId;
-  render(state);
+  const kickButton = event.target.closest('.kick-player');
+  if (kickButton) {
+    if (confirm(`确定将 ${kickButton.dataset.playerName} 移出房间吗？`)) send('kick', {playerId:kickButton.dataset.playerId});
+    return;
+  }
+  const handButton = event.target.closest('[data-hand-id]');
+  if (handButton && state) {
+    selectedHandId = handButton.dataset.handId;
+    render(state);
+  }
 };
 $('toggle-log').onclick = () => setLogVisible(!logVisible);
 $('chat-form').onsubmit = event => {
