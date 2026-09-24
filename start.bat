@@ -1,7 +1,14 @@
 @echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
+set "UV_CACHE_DIR=%~dp0.uv-cache"
 echo [1/3] Checking uv...
+
+powershell -NoProfile -Command "try { $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 8765); $client.Close(); exit 1 } catch { exit 0 }"
+if errorlevel 1 (
+    echo Port 8765 is already in use. Close the previous poker server, then run start.bat again.
+    goto failed
+)
 
 where uv >nul 2>nul
 if not errorlevel 1 (
@@ -28,11 +35,25 @@ if not errorlevel 1 (
 )
 
 echo [2/3] Preparing Python 3.12 and downloading dependencies...
+set "VENV_DIR=%~dp0.venv"
+if exist "%VENV_DIR%\Scripts\python.exe" (
+    "%VENV_DIR%\Scripts\python.exe" -c "import aiohttp" >nul 2>nul
+    if errorlevel 1 (
+        echo Existing .venv cannot load dependencies. Preparing a separate environment...
+        set "VENV_DIR=%~dp0.venv-%USERNAME%"
+    )
+)
+set "UV_PROJECT_ENVIRONMENT=%VENV_DIR%"
 call "%UV%" sync --locked
 if errorlevel 1 goto failed
+"%VENV_DIR%\Scripts\python.exe" -c "import aiohttp" >nul 2>nul
+if errorlevel 1 (
+    echo The Python environment could not load aiohttp.
+    goto failed
+)
 
 echo [3/3] Starting poker server: http://localhost:8765/
-"%~dp0.venv\Scripts\python.exe" "%~dp0server.py"
+"%VENV_DIR%\Scripts\python.exe" "%~dp0server.py"
 if errorlevel 1 goto failed
 exit /b 0
 

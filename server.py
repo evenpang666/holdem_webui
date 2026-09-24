@@ -5,6 +5,9 @@ import asyncio
 import json
 import secrets
 import socket
+import time
+import webbrowser
+from datetime import datetime
 from pathlib import Path
 
 from aiohttp import web, WSMsgType
@@ -42,13 +45,44 @@ class Room:
         self.table.add(host)
         self.sockets = {}
         self.bot_task = None
+        self.bot_delay_ms = 1100
+        self.table.events.append(f"{host.name} 创建房间")
+        self.event_times = []
+        self.chat_messages = []
+        self.chat_sequence = 0
+
+    def event_log(self):
+        while len(self.event_times) < len(self.table.events):
+            self.event_times.append(datetime.now().strftime("%H:%M:%S"))
+        return [{"id": index + 1, "time": self.event_times[index], "text": event}
+                for index, event in enumerate(self.table.events)]
 
     def payload(self, viewer):
         state = self.table.view(viewer)
         state.update({"room": self.code, "you": viewer, "host": self.host,
+                      "botDelayMs": self.bot_delay_ms,
+                      "events": self.event_log(), "chat": self.chat_messages[-200:],
                       "canStart": self.table.phase in ("waiting", "complete")
                       and len(self.table.eligible()) >= 2})
         return state
+
+    async def send_chat(self, pid, text):
+        player = next((p for p in self.table.players if p.id == pid and not p.departed), None)
+        if player is None:
+            raise ValueError("玩家不在房间内")
+        if type(text) is not str or not text.strip() or len(text.strip()) > 200:
+            raise ValueError("聊天内容须为 1～200 个字符")
+        self.chat_sequence += 1
+        entry = {"id": self.chat_sequence, "senderId": pid, "sender": player.name,
+                 "text": text.strip(), "time": datetime.now().strftime("%H:%M")}
+        self.chat_messages.append(entry)
+        self.chat_messages = self.chat_messages[-200:]
+        for ws in list(self.sockets.values()):
+            if not ws.closed:
+                try:
+                    await ws.send_json({"type": "chat", "message": entry})
+                except ConnectionError:
+                    pass
 
     async def broadcast(self):
         for pid, ws in list(self.sockets.items()):
@@ -65,7 +99,7 @@ class Room:
             self.bot_task = asyncio.create_task(self.run_bot())
 
     async def run_bot(self):
-        await asyncio.sleep(0.7 + secrets.randbelow(9) / 10)
+        await asyncio.sleep(self.bot_delay_ms / 1000)
         actor = next((p for p in self.table.players if p.id == self.table.turn), None)
         if not actor or not actor.bot:
             return
@@ -76,6 +110,36 @@ class Room:
             self.table.act(actor.id, "call")
         # Clear before broadcast so the next bot can be scheduled.
         self.bot_task = None
+        await self.broadcast()
+
+    async def remove_member(self, pid, reason=None):
+        player = next((p for p in self.table.players if p.id == pid and not p.departed), None)
+        if player is None:
+            raise ValueError("玩家不在房间内")
+        ws = self.sockets.pop(pid, None)
+        if ws and not ws.closed:
+            if reason:
+                await ws.send_json({"type": "kicked", "reason": reason})
+            await ws.close()
+        for token, value in list(SESSIONS.items()):
+            if value == (self.code, pid):
+                del SESSIONS[token]
+        if player.bot and self.bot_task and not self.bot_task.done():
+            self.bot_task.cancel()
+            self.bot_task = None
+        self.table.remove(pid, "被房主移出房间" if reason else "离开房间")
+        if pid == self.host:
+            successor = next((p for p in self.table.players if not p.bot and not p.departed and p.connected), None)
+            if successor is None:
+                successor = next((p for p in self.table.players if not p.bot and not p.departed), None)
+            if successor:
+                self.host = successor.id
+            else:
+                ROOMS.pop(self.code, None)
+                if self.bot_task:
+                    self.bot_task.cancel()
+                    self.bot_task = None
+                return
         await self.broadcast()
 
 
@@ -146,12 +210,25 @@ async def join(request):
             raise ValueError("找不到该房间")
         player = Player(secrets.token_urlsafe(12), name, buyin, buyin)
         room.table.add(player)
+        room.table.events.append(f"{player.name} 加入房间")
         token = secrets.token_urlsafe(32)
         SESSIONS[token] = (room_code, player.id)
         await room.broadcast()
         return web.json_response({"room": room_code, "token": token})
     except ValueError as error:
         return fail(error)
+
+
+async def leave_room(request):
+    data = await read_json(request)
+    session = SESSIONS.get(data.get("token"))
+    if not session:
+        raise web.HTTPUnauthorized(text="会话已失效")
+    room = ROOMS.get(session[0])
+    if not room:
+        raise web.HTTPNotFound(text="房间已关闭")
+    await room.remove_member(session[1])
+    return web.json_response({"ok": True})
 
 
 async def websocket(request):
@@ -171,6 +248,8 @@ async def websocket(request):
     if old and not old.closed:
         await old.close()
     room.sockets[pid] = ws
+    if not player.connected:
+        room.table.events.append(f"{player.name} 重新连接")
     player.connected = True
     await room.broadcast()
     async for message in ws:
@@ -178,9 +257,14 @@ async def websocket(request):
             continue
         try:
             data = json.loads(message.data)
+            if not isinstance(data, dict):
+                raise ValueError("无效操作")
             kind = data.get("type")
             if kind == "action":
                 room.table.act(pid, data.get("action"), data.get("amount"))
+            elif kind == "chat":
+                await room.send_chat(pid, data.get("text"))
+                continue
             elif kind == "start":
                 if pid != room.host:
                     raise ValueError("只有房主可以发牌")
@@ -189,7 +273,30 @@ async def websocket(request):
                 if pid != room.host:
                     raise ValueError("只有房主可以添加电脑玩家")
                 number = 1 + sum(p.bot for p in room.table.players)
-                room.table.add(Player(secrets.token_urlsafe(12), f"电脑玩家 {number}", 1000, 1000, bot=True))
+                bot = Player(secrets.token_urlsafe(12), f"电脑玩家 {number}", 1000, 1000, bot=True)
+                room.table.add(bot)
+                room.table.events.append(f"{bot.name} 加入房间")
+            elif kind == "bot_speed":
+                if pid != room.host:
+                    raise ValueError("只有房主可以调整电脑速度")
+                delay = data.get("delayMs")
+                if type(delay) is not int or delay < 200 or delay > 3000 or delay % 100:
+                    raise ValueError("电脑速度参数无效")
+                room.bot_delay_ms = delay
+                if room.bot_task and not room.bot_task.done():
+                    room.bot_task.cancel()
+                    room.bot_task = None
+            elif kind == "kick":
+                if pid != room.host:
+                    raise ValueError("只有房主可以踢出玩家")
+                target = data.get("playerId")
+                if target == pid:
+                    raise ValueError("请使用退出房间按钮")
+                victim = next((p for p in room.table.players if p.id == target and not p.departed), None)
+                if victim is None:
+                    raise ValueError("玩家不在房间内")
+                await room.remove_member(target, "你已被房主移出房间")
+                continue
             elif kind == "restart":
                 if pid != room.host:
                     raise ValueError("只有房主可以重新开始游戏")
@@ -201,9 +308,11 @@ async def websocket(request):
                 for token, value in list(SESSIONS.items()):
                     if value[0] == room.code and value[1] != pid:
                         del SESSIONS[token]
+                previous_events = room.table.events[:]
                 player.stack = player.buyin
                 room.table = Table()
                 room.table.add(player)
+                room.table.events = previous_events + ["房主重新开始游戏"]
                 room.sockets = {pid: ws}
                 if room.bot_task:
                     room.bot_task.cancel()
@@ -216,6 +325,7 @@ async def websocket(request):
     if room.sockets.get(pid) is ws:
         room.sockets.pop(pid, None)
         player.connected = False
+        room.table.events.append(f"{player.name} 断开连接")
         if room.table.turn == pid:
             room.table.act(pid, "fold")
         await room.broadcast()
@@ -244,18 +354,35 @@ async def session_status(request):
     return web.json_response({"ok": True})
 
 
-def app():
-    application = web.Application(client_max_size=1024 * 1024)
+def app(auto_open=False):
+    @web.middleware
+    async def fresh_assets(request, handler):
+        response = await handler(request)
+        if request.path == "/" or request.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
+    application = web.Application(client_max_size=1024 * 1024, middlewares=[fresh_assets])
     application.router.add_get("/", index)
     application.router.add_get("/ws", websocket)
     application.router.add_post("/api/create", create)
     application.router.add_post("/api/join", join)
+    application.router.add_post("/api/leave", leave_room)
     application.router.add_get("/api/health", lambda _: web.json_response({"ok": True}))
     application.router.add_get("/api/network", network)
     application.router.add_get("/api/session", session_status)
     application.router.add_static("/static", ROOT / "static")
+    async def open_host_page(_application):
+        async def open_when_ready():
+            await asyncio.sleep(0.5)
+            webbrowser.open(f"http://localhost:8765/?fresh={time.time_ns()}")
+        asyncio.create_task(open_when_ready())
+    if auto_open:
+        application.on_startup.append(open_host_page)
     return application
 
 
 if __name__ == "__main__":
-    web.run_app(app(), host="0.0.0.0", port=8765, print=lambda text: print(text, flush=True))
+    web.run_app(app(auto_open=True), host="0.0.0.0", port=8765, print=lambda text: print(text, flush=True))

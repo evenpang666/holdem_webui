@@ -2,6 +2,7 @@
 set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+export UV_CACHE_DIR="$PWD/.uv-cache"
 echo "[1/3] 检查 uv..."
 
 if command -v uv >/dev/null 2>&1; then

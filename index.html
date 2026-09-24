@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>河牌 · 局域网德州扑克</title>
-  <link rel="stylesheet" href="/static/style.css">
-  <script src="/static/app.js" defer></script>
+  <link rel="stylesheet" href="/static/style.css?v=20260925-chat-log">
+  <script src="/static/app.js?v=20260925-chat-log" defer></script>
 </head>
 <body>
   <main id="home" class="home">
@@ -29,7 +29,7 @@
   <main id="game" class="game hidden">
     <header class="game-header">
       <div class="game-brand"><span class="brand-mark">♠</span><span>河牌</span><span class="game-divider"></span><span class="room-label">房间 <strong id="room-code">------</strong></span></div>
-      <div class="header-right"><span id="connection" class="connection"><i></i> 已连接</span><button id="copy-link" class="icon-button" title="复制邀请链接">⧉ <span>邀请</span></button><button id="leave" class="icon-button" title="返回首页">⌂</button></div>
+      <div class="header-right"><span id="connection" class="connection"><i></i> 已连接</span><button id="copy-link" class="icon-button" title="复制邀请链接">⧉ <span>邀请</span></button><button id="leave" class="icon-button" title="退出房间">退出房间</button></div>
     </header>
     <section class="game-content">
       <div class="table-wrap">
@@ -43,12 +43,23 @@
           </div>
         </div>
       </div>
+      <section id="showdown" class="showdown hidden" aria-label="摊牌牌型"><div class="showdown-title">摊牌 · 点击玩家查看最佳五张牌</div><div id="showdown-players" class="showdown-players"></div></section>
       <section class="bottom-panel">
         <div class="status-block"><div class="panel-caption">当前牌局</div><div id="status-text" class="status-text">等待玩家加入</div><div id="hand-number" class="status-sub">第 0 局 · 5 / 10 盲注</div></div>
-        <div id="host-controls" class="host-controls hidden"><button id="add-bot" class="button quiet">＋ 电脑玩家</button><button id="start-hand" class="button gold">开始发牌</button><button id="restart" class="restart-button" title="踢出所有玩家并重置游戏">重新开始</button></div>
+        <div id="host-controls" class="host-controls hidden"><label class="bot-speed" for="bot-speed"><span>电脑行动间隔 <strong id="bot-speed-value">1.1 秒</strong></span><input id="bot-speed" type="range" min="200" max="3000" step="100" value="1100" aria-label="电脑玩家行动间隔"><span class="speed-ends"><span>快</span><span>慢</span></span></label><button id="add-bot" class="button quiet">＋ 电脑玩家</button><button id="start-hand" class="button gold">开始发牌</button><button id="restart" class="restart-button" title="踢出所有玩家并重置游戏">重新开始</button></div>
         <div id="action-controls" class="action-controls hidden"><button id="fold" class="button action-fold">弃牌</button><button id="call" class="button action-call">过牌</button><div class="raise-box"><div class="raise-top"><label for="raise-amount">加注至</label><span id="raise-range">¥20–¥1000</span></div><input id="raise-amount" type="range" min="20" max="1000" step="5" value="20"><div class="raise-bottom"><input id="raise-value" inputmode="numeric" type="number" min="5" step="5" value="20"><button id="raise" class="button action-raise">加注</button></div></div></div>
       </section>
-      <aside class="event-bar"><span class="event-title">牌桌动态</span><div id="events">等待第一张牌发出…</div></aside>
+      <div class="room-panels">
+        <section class="chat-panel" aria-label="实时聊天">
+          <div class="panel-heading"><strong>实时聊天</strong><span>仅房间玩家可见</span></div>
+          <div id="chat-messages" class="chat-messages" role="log" aria-live="polite"><p class="panel-empty">发送一条消息，和牌友聊聊。</p></div>
+          <form id="chat-form" class="chat-form"><input id="chat-input" type="text" maxlength="200" placeholder="输入消息…" aria-label="聊天消息" autocomplete="off"><button type="submit">发送</button></form>
+        </section>
+        <section id="event-panel" class="event-panel" aria-label="牌局日志">
+          <div class="panel-heading"><strong>牌局日志</strong><button id="toggle-log" type="button" aria-expanded="true" aria-controls="events">隐藏</button></div>
+          <ol id="events" class="event-list" role="log" aria-live="polite"><li class="panel-empty">等待牌局开始…</li></ol>
+        </section>
+      </div>
     </section>
   </main>
 

@@ -1,4 +1,4 @@
-from poker import Player, Table, score, score_five
+from poker import Player, Table, best_five, score, score_five
 
 
 def test_hand_ranking_and_wheel():
@@ -82,4 +82,46 @@ def test_fold_awards_pot_without_showdown():
     assert table.phase == "complete"
     assert table.players[0].stack == 95
     assert table.players[1].stack == 105
+    assert table.result["hands"] == {"b": "未摊牌"}
     assert sum(p.stack for p in table.players) == 200
+
+
+def test_best_five_marks_exact_cards_including_wheel():
+    cards = [(14, "s"), (2, "s"), (3, "s"), (4, "s"), (5, "s"), (13, "h"), (13, "d")]
+    chosen = best_five(cards)
+    assert set(chosen) == set(cards[:5])
+    assert score_five(chosen) == score(cards)
+
+
+def test_remove_current_player_folds_and_preserves_pot():
+    table = Table()
+    table.add(Player("a", "A", 100, 100))
+    table.add(Player("b", "B", 100, 100))
+    table.add(Player("c", "C", 100, 100))
+    table.start()
+    assert table.turn == "a"
+    table.remove("a")
+    assert table.turn == "b"
+    assert all(p["id"] != "a" for p in table.view("b")["players"])
+    table.act("b", "fold")
+    assert table.phase == "complete"
+    assert sum(p.stack for p in table.players) == 300
+    table.prune_departed()
+    assert len(table.players) == 2
+
+
+def test_showdown_contains_each_contenders_best_five():
+    table = Table()
+    table.players = [Player("a", "A", 0, 50), Player("b", "B", 0, 50)]
+    table.dealer = 0
+    table.phase = "river"
+    table.board = [(14, "s"), (13, "s"), (12, "s"), (2, "h"), (3, "c")]
+    table.players[0].cards = [(11, "s"), (10, "s")]
+    table.players[1].cards = [(2, "c"), (2, "d")]
+    for p in table.players:
+        p.in_hand = True
+        p.total_bet = 50
+    table.settle()
+    assert table.result["hands"] == {"a": "同花顺", "b": "三条"}
+    assert set(table.result["bestCards"]["a"]) == {"As", "Ks", "Qs", "Js", "Ts"}
+    assert len(table.result["bestCards"]["b"]) == 5

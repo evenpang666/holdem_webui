@@ -54,6 +54,11 @@ def score(cards):
     return max(score_five(c) for c in itertools.combinations(cards, 5))
 
 
+def best_five(cards):
+    """Return the five actual cards used for the highest ranked hand."""
+    return max(itertools.combinations(cards, 5), key=score_five)
+
+
 @dataclass
 class Player:
     id: str
@@ -71,6 +76,8 @@ class Player:
     acted: bool = False
     last_action_bet: int = 0
     last_action: str = ""
+    action_seq: int = 0
+    departed: bool = False
 
 
 class Table:
@@ -86,14 +93,42 @@ class Table:
         self.hand_no = 0
         self.result = None
         self.events = []
+        self.action_seq = 0
 
     def add(self, player):
-        if len(self.players) >= MAX_PLAYERS:
+        if sum(not p.departed for p in self.players) >= MAX_PLAYERS:
             raise ValueError("房间已满（最多 10 人）")
         self.players.append(player)
 
+    def prune_departed(self):
+        if not any(p.departed for p in self.players):
+            return
+        old_dealer = self.dealer
+        removed_before = sum(p.departed for p in self.players[:old_dealer + 1])
+        self.players = [p for p in self.players if not p.departed]
+        self.dealer = (old_dealer - removed_before) % len(self.players) if self.players else -1
+
+    def remove(self, player_id, label="离开房间"):
+        p = next((p for p in self.players if p.id == player_id and not p.departed), None)
+        if p is None:
+            raise ValueError("玩家不在房间内")
+        p.departed = True
+        p.connected = False
+        self.events.append(f"{p.name} {label}")
+        active = self.phase not in ("waiting", "complete")
+        if active and p.in_hand:
+            p.folded = True
+            p.last_action = label
+            if self.turn == p.id:
+                self.turn = None
+                self.advance(self.players.index(p))
+            elif len(self.live()) == 1:
+                self.settle()
+        if self.phase in ("waiting", "complete"):
+            self.prune_departed()
+
     def eligible(self):
-        return [p for p in self.players if p.stack > 0 and (p.bot or p.connected)]
+        return [p for p in self.players if not p.departed and p.stack > 0 and (p.bot or p.connected)]
 
     def next_index(self, index, predicate):
         for offset in range(1, len(self.players) + 1):
@@ -105,6 +140,7 @@ class Table:
     def start(self):
         if self.phase not in ("waiting", "complete"):
             raise ValueError("当前牌局尚未结束")
+        self.prune_departed()
         ready = self.eligible()
         if len(ready) < 2:
             raise ValueError("至少需要两名有筹码的玩家")
@@ -113,7 +149,8 @@ class Table:
         self.board = []
         self.pile = deck()
         self.result = None
-        self.events = []
+        self.events.append(f"第 {self.hand_no} 局开始")
+        self.action_seq = 0
         self.dealer = self.next_index(self.dealer, lambda p: p in ready)
         for p in self.players:
             p.cards = []
@@ -121,6 +158,7 @@ class Table:
             p.folded = p.all_in = p.acted = False
             p.last_action_bet = 0
             p.last_action = ""
+            p.action_seq = 0
             p.in_hand = p in ready
         # Deal one card at a time, starting left of the button.
         for _ in range(2):
@@ -149,6 +187,8 @@ class Table:
         p.all_in = p.stack == 0
         p.last_action = f"{label} ¥{paid}"
         if label in ("小盲", "大盲"):
+            self.action_seq += 1
+            p.action_seq = self.action_seq
             self.events.append(f"{p.name} 投入{label} ¥{paid}")
 
     def live(self):
@@ -204,6 +244,8 @@ class Table:
         p.acted = True
         p.last_action_bet = self.current_bet
         self.events.append(f"{p.name} {p.last_action}")
+        self.action_seq += 1
+        p.action_seq = self.action_seq
         self.turn = None
         self.advance(self.players.index(p))
 
@@ -232,7 +274,9 @@ class Table:
             else:
                 self.board.append(self.pile.pop())
                 self.phase = "river"
-            self.events.append({"flop": "翻牌", "turn": "转牌", "river": "河牌"}[self.phase])
+            street = {"flop": "翻牌", "turn": "转牌", "river": "河牌"}[self.phase]
+            shown = self.board if self.phase == "flop" else self.board[-1:]
+            self.events.append(f"{street}：{' '.join(card_text(c) for c in shown)}")
             for p in self.players:
                 p.street_bet = 0
                 p.acted = False
@@ -246,7 +290,9 @@ class Table:
 
     def settle(self):
         contenders = self.live()
-        scores = {p.id: score(p.cards + self.board) for p in contenders} if len(contenders) > 1 else {}
+        best_hands = {p.id: best_five(p.cards + self.board) for p in contenders
+                      if len(p.cards) + len(self.board) >= 5}
+        scores = {pid: score_five(cards) for pid, cards in best_hands.items()}
         levels = sorted({p.total_bet for p in self.players if p.total_bet})
         previous = 0
         awards = {p.id: 0 for p in self.players}
@@ -272,14 +318,18 @@ class Table:
         self.phase = "complete"
         self.turn = None
         self.result = {"pots": pots, "awards": awards,
-                       "hands": {p.id: RANK_NAMES[scores[p.id][0]] for p in contenders if p.id in scores}}
+                       "hands": {p.id: RANK_NAMES[scores[p.id][0]] if p.id in scores else "未摊牌"
+                                 for p in contenders},
+                       "bestCards": {pid: [card_text(c) for c in cards] for pid, cards in best_hands.items()}}
+        for p in contenders:
+            self.events.append(f"{p.name} 牌型：{self.result['hands'][p.id]}")
         for p in self.players:
-            if p.in_hand and p.stack == 0:
-                p.last_action = "破产"
+            if awards[p.id]:
+                self.events.append(f"{p.name} 赢得 ¥{awards[p.id]}")
         self.events.append("牌局结束")
 
     def view(self, viewer_id):
-        reveal = self.phase == "complete" and len(self.live()) > 1
+        reveal = self.phase == "complete" and bool(self.result and self.result["bestCards"])
         return {"phase": self.phase, "board": [card_text(c) for c in self.board],
                 "dealer": self.players[self.dealer].id if self.dealer >= 0 and self.players else None,
                 "turn": self.turn, "handNo": self.hand_no,
@@ -288,7 +338,8 @@ class Table:
                              "bot": p.bot, "connected": p.connected, "inHand": p.in_hand,
                              "folded": p.folded, "allIn": p.all_in, "streetBet": p.street_bet,
                              "totalBet": p.total_bet, "lastAction": p.last_action,
+                             "actionSeq": p.action_seq,
                              "cards": [card_text(c) for c in p.cards] if (p.id == viewer_id or reveal and p.in_hand and not p.folded) else ["??"] * len(p.cards)}
-                            for p in self.players],
+                            for p in self.players if not p.departed],
                 "options": self.options(next((p for p in self.players if p.id == viewer_id), None)) if any(p.id == viewer_id for p in self.players) else None,
-                "result": self.result, "events": self.events[-8:]}
+                "result": self.result, "events": self.events}

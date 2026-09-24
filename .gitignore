@@ -5,7 +5,9 @@ __pycache__/
 .coverage
 htmlcov/
 .venv/
+.venv-*/
 venv/
+.uv-cache/
 
 # Local configuration and logs
 .env
@@ -22,3 +24,5 @@ dist/
 .vscode/
 .DS_Store
 Thumbs.db
+
+chat.md
