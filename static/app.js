@@ -15,6 +15,7 @@ function showModal(which) {
     const recent = JSON.parse(localStorage.getItem('river-addresses') || '[]');
     $('recent-addresses').innerHTML = recent.map(address => `<option value="${escapeHTML(address)}"></option>`).join('');
     $('join-ip').value ||= recent[0] || location.host;
+    updateJoinIdentity();
   }
 }
 function closeModal() { modal.classList.add('hidden'); }
@@ -22,6 +23,13 @@ function error(text) { $('modal-error').textContent = text; $('modal-error').cla
 function toast(text) { const el = $('toast'); el.textContent = text; el.classList.remove('hidden'); clearTimeout(toast.timer); toast.timer = setTimeout(() => el.classList.add('hidden'), 3200); }
 function escapeHTML(text) { return String(text).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function rememberAddress(address) { const old = JSON.parse(localStorage.getItem('river-addresses') || '[]'); localStorage.setItem('river-addresses', JSON.stringify([address, ...old.filter(x => x !== address)].slice(0, 6))); }
+function returnKeyFor(room) { return localStorage.getItem(`river-return-${room.toUpperCase()}`); }
+function updateJoinIdentity() {
+  const returning = !!returnKeyFor($('join-room').value.trim());
+  $('join-return-note').classList.toggle('hidden', !returning);
+  $('join-new-fields').classList.toggle('hidden', returning);
+  $('join-submit').firstChild.textContent = returning ? '恢复原座位 ' : '加入牌桌 ';
+}
 function validBuyin(value) { const n = Number(value); return Number.isInteger(n) && n >= 5 && n <= 1000 && n % 5 === 0 ? n : null; }
 async function post(path, data) {
   const response = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
@@ -35,6 +43,8 @@ async function post(path, data) {
 }
 function enter(result) {
   session = result;
+  if (result.returnKey) localStorage.setItem(`river-return-${result.room}`, result.returnKey);
+  localStorage.setItem('river-last-room', result.room);
   lastResultHand = 0;
   selectedHandId = null;
   leavingRoom = false;
@@ -46,6 +56,7 @@ function enter(result) {
   setLogVisible(true);
   localStorage.setItem('river-session', JSON.stringify(session));
   $('resume').classList.remove('hidden');
+  $('return-room').classList.add('hidden');
   home.classList.add('hidden'); game.classList.remove('hidden'); closeModal();
   connect();
 }
@@ -62,7 +73,11 @@ function connect() {
     if (data.type === 'state') render(data.state);
     if (data.type === 'chat') appendChat(data.message);
     if (data.type === 'error') toast(data.message);
-    if (data.type === 'kicked') leave(data.reason);
+    if (data.type === 'kicked') {
+      localStorage.removeItem(`river-return-${session.room}`);
+      leave(data.reason);
+    }
+    if (data.type === 'settlement') showSettlement(data.ranking);
   };
   socket.onclose = async event => {
     if (!session || leavingRoom) return;
@@ -81,6 +96,7 @@ function send(type, extra = {}) {
   return false;
 }
 function leave(message = '') {
+  const room = session?.room;
   session = null; state = null;
   selectedHandId = null;
   actionPops.clear();
@@ -89,11 +105,24 @@ function leave(message = '') {
   leavingRoom = false;
   localStorage.removeItem('river-session');
   $('resume').classList.add('hidden');
+  if (room) $('join-room').value = room;
+  $('return-room').classList.toggle('hidden', !room || !returnKeyFor(room));
   clearTimeout(reconnectTimer);
   if (socket) { socket.onclose = null; socket.close(); socket = null; }
   game.classList.add('hidden'); home.classList.remove('hidden');
   $('result-banner').classList.add('hidden');
   if (message) toast(message);
+}
+function showSettlement(ranking) {
+  const room = session?.room;
+  leave();
+  if (room) {
+    localStorage.removeItem(`river-return-${room}`);
+    if (localStorage.getItem('river-last-room') === room) localStorage.removeItem('river-last-room');
+  }
+  $('return-room').classList.add('hidden');
+  $('settlement-list').innerHTML = ranking.map(p => `<div class="settlement-row"><span>${p.rank}</span><strong>${escapeHTML(p.name)}${p.bot ? ' · AI' : ''}<small>累计带入 ¥${p.buyin} · 剩余 ¥${p.stack}</small></strong><b class="${p.net < 0 ? 'negative' : 'positive'}">${p.net > 0 ? '+' : ''}¥${p.net}</b></div>`).join('');
+  $('settlement').classList.remove('hidden');
 }
 function setLogVisible(visible) {
   logVisible = visible;
@@ -213,7 +242,7 @@ function render(next) {
   }).join('');
   const my = next.players.find(p => p.id === next.you);
   const actor = next.players.find(p => p.id === next.turn);
-  $('status-text').textContent = next.phase === 'waiting' ? '等待玩家加入' : next.phase === 'complete' ? (my?.stack === 0 ? '筹码已用尽，等待房主重新开始' : '本局结束，准备下一局') : actor ? `${actor.name} 正在行动` : '正在发牌';
+  $('status-text').textContent = my?.pendingBuyin ? '已申请重新入座，等待下一局' : next.phase === 'waiting' ? '等待玩家加入' : next.phase === 'complete' ? (my?.stack === 0 ? '筹码已用尽，可重新入座' : '本局结束，准备下一局') : actor ? `${actor.name} 正在行动` : '正在发牌';
   renderEvents(next.events || []);
   for (const message of next.chat || []) appendChat(message);
   const isHost = next.host === next.you;
@@ -223,6 +252,11 @@ function render(next) {
   $('bot-speed-value').textContent = `${(next.botDelayMs / 1000).toFixed(1)} 秒`;
   $('start-hand').disabled = !next.canStart;
   $('start-hand').textContent = next.phase === 'complete' ? '下一局' : '开始发牌';
+  $('settle-game').disabled = !['waiting', 'complete'].includes(next.phase);
+  $('rebuy-controls').classList.toggle('hidden', !next.canRebuy);
+  $('rebuy-pending').classList.toggle('hidden', !my?.pendingBuyin);
+  if (my?.pendingBuyin) $('rebuy-pending').textContent = `已申请带入 ¥${my.pendingBuyin}，等待下一局。`;
+  $('rebuy-submit').textContent = ['waiting', 'complete'].includes(next.phase) ? '重新入座' : '申请下一局入座';
   $('action-controls').classList.toggle('hidden', !next.options);
   if (next.options) {
     const o = next.options;
@@ -244,7 +278,7 @@ function render(next) {
     const gain = Object.entries(next.result?.awards || {}).filter(([, amount]) => amount > 0).map(([id, amount]) => `${next.players.find(p => p.id === id)?.name} +¥${amount}`).join(' · ');
     const banner = $('result-banner');
     banner.classList.toggle('bust-banner', my?.stack === 0);
-    banner.innerHTML = my?.stack === 0 ? '<strong>筹码已用尽</strong><span>等待房主重新开始游戏</span>' : `<strong>${escapeHTML(winners.join('、') || '本局结束')} 获胜</strong><span>${escapeHTML(gain)}</span>`;
+    banner.innerHTML = my?.stack === 0 ? '<strong>筹码已用尽</strong><span>可在下方重新入座</span>' : `<strong>${escapeHTML(winners.join('、') || '本局结束')} 获胜</strong><span>${escapeHTML(gain)}</span>`;
     banner.classList.remove('hidden');
     setTimeout(() => banner.classList.add('hidden'), 4200);
   }
@@ -262,10 +296,11 @@ $('create-submit').onclick = async () => {
   catch (e) { error(e.message); }
 };
 $('join-submit').onclick = async () => {
-  const buyin = validBuyin($('join-buyin').value);
-  if (!buyin) return error('带入金额须为 5～1000 元，且为 5 的倍数');
   const room = $('join-room').value.trim().toUpperCase();
   if (!/^[A-Z2-9]{6}$/.test(room)) return error('请输入 6 位房间码');
+  const returnKey = returnKeyFor(room);
+  const buyin = returnKey ? null : validBuyin($('join-buyin').value);
+  if (!returnKey && !buyin) return error('带入金额须为 5～1000 元，且为 5 的倍数');
   let origin;
   try { origin = new URL(/^https?:\/\//i.test($('join-ip').value.trim()) ? $('join-ip').value.trim() : `http://${$('join-ip').value.trim()}`).origin; }
   catch { return error('房主 IP 地址格式不正确'); }
@@ -273,14 +308,20 @@ $('join-submit').onclick = async () => {
   if (origin !== location.origin) {
     const url = new URL(origin);
     url.searchParams.set('join', room);
-    url.searchParams.set('name', $('join-name').value.trim());
-    url.searchParams.set('buyin', buyin);
+    if (!returnKey) {
+      url.searchParams.set('name', $('join-name').value.trim());
+      url.searchParams.set('buyin', buyin);
+    }
     location.href = url.href;
     return;
   }
-  try { enter(await post('/api/join', {room, name:$('join-name').value.trim(), buyin})); }
-  catch (e) { error(e.message); }
+  try { enter(await post('/api/join', returnKey ? {room, returnKey} : {room, name:$('join-name').value.trim(), buyin})); }
+  catch (e) {
+    if (returnKey && e.message.includes('凭证无效')) { localStorage.removeItem(`river-return-${room}`); updateJoinIdentity(); }
+    error(e.message);
+  }
 };
+$('join-room').oninput = updateJoinIdentity;
 $('fold').onclick = () => send('action', {action:'fold'});
 $('call').onclick = () => send('action', {action:'call'});
 $('raise').onclick = () => {
@@ -298,7 +339,15 @@ $('bot-speed').oninput = () => {
   speedTimer = setTimeout(() => send('bot_speed', {delayMs}), 100);
 };
 $('start-hand').onclick = () => send('start');
-$('restart').onclick = () => { if (confirm('重新开始会踢出所有其他玩家，并重置你的带入筹码。确定继续吗？')) send('restart'); };
+$('rebuy-submit').onclick = () => {
+  const buyin = validBuyin($('rebuy-amount').value);
+  if (!buyin) return toast('带入金额须为 5～1000 元，且为 5 的倍数');
+  send('rebuy', {buyin});
+};
+$('settle-game').onclick = () => {
+  if (confirm('结算后将关闭房间，并向所有玩家显示最终排行。确定结算吗？')) send('settle');
+};
+$('settlement-close').onclick = () => $('settlement').classList.add('hidden');
 $('seat-layer').onclick = event => {
   const kickButton = event.target.closest('.kick-player');
   if (kickButton) {
@@ -332,6 +381,19 @@ $('leave').onclick = async () => {
   }
 };
 $('resume').onclick = () => { home.classList.add('hidden'); game.classList.remove('hidden'); connect(); };
+$('return-room').onclick = async () => {
+  const room = localStorage.getItem('river-last-room');
+  const returnKey = room && returnKeyFor(room);
+  if (!returnKey) return toast('没有可恢复的房间');
+  try { enter(await post('/api/join', {room, returnKey})); }
+  catch (e) {
+    if (e.message.includes('凭证无效') || e.message.includes('找不到该房间')) {
+      localStorage.removeItem(`river-return-${room}`);
+      $('return-room').classList.add('hidden');
+    }
+    toast(e.message);
+  }
+};
 $('copy-link').onclick = async () => {
   try {
     const response = await fetch('/api/network');
@@ -360,6 +422,14 @@ $('copy-link').onclick = async () => {
     if (invitedName) $('join-name').value = invitedName;
     if (validBuyin(invitedBuyin)) $('join-buyin').value = invitedBuyin;
     rememberAddress(location.host);
+    const returnKey = returnKeyFor(invitedRoom);
+    if (returnKey) {
+      try { enter(await post('/api/join', {room:invitedRoom.toUpperCase(), returnKey})); return; }
+      catch (e) {
+        if (e.message.includes('凭证无效')) localStorage.removeItem(`river-return-${invitedRoom.toUpperCase()}`);
+        showModal('join-form'); error(e.message); return;
+      }
+    }
     if (invitedName && validBuyin(invitedBuyin) && params.has('join')) {
       try { enter(await post('/api/join', {room:invitedRoom.toUpperCase(), name:invitedName, buyin:invitedBuyin})); return; }
       catch (e) { showModal('join-form'); error(e.message); return; }
@@ -369,4 +439,8 @@ $('copy-link').onclick = async () => {
   }
   try { const saved = JSON.parse(localStorage.getItem('river-session') || 'null'); if (saved?.token) enter(saved); }
   catch { localStorage.removeItem('river-session'); }
+  if (!session) {
+    const room = localStorage.getItem('river-last-room');
+    $('return-room').classList.toggle('hidden', !room || !returnKeyFor(room));
+  }
 })();

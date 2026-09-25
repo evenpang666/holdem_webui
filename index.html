@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>河牌 · 局域网德州扑克</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260925-turn-cards">
-  <script src="/static/app.js?v=20260925-turn-cards" defer></script>
+  <link rel="stylesheet" href="/static/style.css?v=20260925-rebuy-settle">
+  <script src="/static/app.js?v=20260925-rebuy-settle" defer></script>
 </head>
 <body>
   <main id="home" class="home">
@@ -19,6 +19,7 @@
         <button id="open-create" class="button primary"><span>开设房间</span><b>↗</b></button>
         <button id="open-join" class="button secondary"><span>加入房间</span><b>→</b></button>
         <button id="resume" class="button secondary hidden"><span>继续牌局</span><b>→</b></button>
+        <button id="return-room" class="button secondary hidden"><span>返回原房间</span><b>→</b></button>
       </div>
       <button id="open-settings" class="settings-link">⚙ &nbsp;设置</button>
     </section>
@@ -45,7 +46,9 @@
       </div>
       <section class="bottom-panel">
         <div class="status-block"><div class="panel-caption">当前牌局</div><div id="status-text" class="status-text">等待玩家加入</div><div id="hand-number" class="status-sub">第 0 局 · 5 / 10 盲注</div></div>
-        <div id="host-controls" class="host-controls hidden"><label class="bot-speed" for="bot-speed"><span>电脑行动间隔 <strong id="bot-speed-value">1.1 秒</strong></span><input id="bot-speed" type="range" min="200" max="3000" step="100" value="1100" aria-label="电脑玩家行动间隔"><span class="speed-ends"><span>快</span><span>慢</span></span></label><button id="add-bot" class="button quiet">＋ 电脑玩家</button><button id="start-hand" class="button gold">开始发牌</button><button id="restart" class="restart-button" title="踢出所有玩家并重置游戏">重新开始</button></div>
+        <div id="host-controls" class="host-controls hidden"><label class="bot-speed" for="bot-speed"><span>电脑行动间隔 <strong id="bot-speed-value">1.1 秒</strong></span><input id="bot-speed" type="range" min="200" max="3000" step="100" value="1100" aria-label="电脑玩家行动间隔"><span class="speed-ends"><span>快</span><span>慢</span></span></label><button id="add-bot" class="button quiet">＋ 电脑玩家</button><button id="start-hand" class="button gold">开始发牌</button><button id="settle-game" class="button quiet" title="当前局结束后结算并关闭房间">结算</button></div>
+        <div id="rebuy-controls" class="rebuy-controls hidden"><label for="rebuy-amount">重新入座带入 <small>¥5–¥1000，5 的倍数</small></label><input id="rebuy-amount" type="number" min="5" max="1000" step="5" value="500"><button id="rebuy-submit" class="button gold">重新入座</button></div>
+        <div id="rebuy-pending" class="rebuy-pending hidden">已申请重新入座，等待下一局。</div>
         <div id="action-controls" class="action-controls hidden"><button id="fold" class="button action-fold">弃牌</button><button id="call" class="button action-call">过牌</button><div class="raise-box"><div class="raise-top"><label for="raise-amount">加注至</label><span id="raise-range">¥20–¥1000</span></div><input id="raise-amount" type="range" min="20" max="1000" step="5" value="20"><div class="raise-bottom"><input id="raise-value" inputmode="numeric" type="number" min="5" step="5" value="20"><button id="raise" class="button action-raise">加注</button></div></div></div>
       </section>
       <div class="room-panels">
@@ -65,11 +68,12 @@
   <div id="modal" class="modal-backdrop hidden"><div class="modal">
     <button id="close-modal" class="modal-close" aria-label="关闭">×</button>
     <div id="create-form" class="form-view hidden"><div class="modal-kicker">CREATE ROOM</div><h2>开设房间</h2><p>先选好你的昵称和本局带入筹码。</p><label>你的昵称<input id="create-name" maxlength="18" placeholder="输入昵称" autocomplete="nickname"></label><label>带入金额 <small>¥5 – ¥1000，5 的倍数</small><input id="create-buyin" type="number" min="5" max="1000" step="5" value="500"></label><button id="create-submit" class="button primary full">创建并入座 <span>→</span></button></div>
-    <div id="join-form" class="form-view hidden"><div class="modal-kicker">JOIN ROOM</div><h2>加入房间</h2><p>输入房主的局域网 IP 和房间码。</p><label>房主 IP 或地址<input id="join-ip" placeholder="例如 192.168.1.8:8765" autocomplete="url" list="recent-addresses"><datalist id="recent-addresses"></datalist></label><label>房间码<input id="join-room" maxlength="6" placeholder="6 位房间码" autocapitalize="characters"></label><label>你的昵称<input id="join-name" maxlength="18" placeholder="输入昵称" autocomplete="nickname"></label><label>带入金额 <small>¥5 – ¥1000，5 的倍数</small><input id="join-buyin" type="number" min="5" max="1000" step="5" value="500"></label><button id="join-submit" class="button primary full">加入牌桌 <span>→</span></button></div>
+    <div id="join-form" class="form-view hidden"><div class="modal-kicker">JOIN ROOM</div><h2>加入房间</h2><p>输入房主的局域网 IP 和房间码。</p><label>房主 IP 或地址<input id="join-ip" placeholder="例如 192.168.1.8:8765" autocomplete="url" list="recent-addresses"><datalist id="recent-addresses"></datalist></label><label>房间码<input id="join-room" maxlength="6" placeholder="6 位房间码" autocapitalize="characters"></label><p id="join-return-note" class="return-note hidden">将恢复你在该房间的昵称、筹码和累计输赢，无需重新带入。</p><div id="join-new-fields"><label>你的昵称<input id="join-name" maxlength="18" placeholder="输入昵称" autocomplete="nickname"></label><label>带入金额 <small>¥5 – ¥1000，5 的倍数</small><input id="join-buyin" type="number" min="5" max="1000" step="5" value="500"></label></div><button id="join-submit" class="button primary full">加入牌桌 <span>→</span></button></div>
     <div id="settings-form" class="form-view hidden"><div class="modal-kicker">SETTINGS</div><h2>设置</h2><p>一张牌桌，几位朋友，刚刚好的游戏之夜。</p><div class="setting-row"><span>盲注</span><strong>¥5 / ¥10</strong></div><div class="setting-row"><span>人数上限</span><strong>10 人</strong></div><div class="setting-row"><span>带入上限</span><strong>¥1000</strong></div><div class="setting-row"><span>筹码单位</span><strong>¥5</strong></div><p class="settings-note">带入筹码用作游戏记分，不涉及支付。</p></div>
     <div id="modal-error" class="form-error hidden"></div>
   </div></div>
   <div id="toast" class="toast hidden"></div>
   <div id="result-banner" class="result-banner hidden"></div>
+  <div id="settlement" class="modal-backdrop hidden"><section class="modal settlement-modal" aria-labelledby="settlement-title"><div class="modal-kicker">FINAL RESULTS</div><h2 id="settlement-title">本场结算</h2><p>房间已结束。排名按净输赢计算。</p><div id="settlement-list" class="settlement-list"></div><button id="settlement-close" class="button primary full">返回首页 <span>→</span></button></section></div>
 </body>
 </html>

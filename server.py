@@ -12,7 +12,7 @@ from pathlib import Path
 
 from aiohttp import web, WSMsgType
 
-from poker import Player, Table, score
+from poker import MAX_PLAYERS, Player, Table, score
 
 ROOT = Path(__file__).parent
 ROOMS = {}
@@ -43,6 +43,9 @@ class Room:
         self.host = host.id
         self.table = Table()
         self.table.add(host)
+        self.members = {host.id: host}
+        self.return_keys = {}
+        self.closed = False
         self.sockets = {}
         self.bot_task = None
         self.bot_delay_ms = 1100
@@ -59,12 +62,107 @@ class Room:
 
     def payload(self, viewer):
         state = self.table.view(viewer)
+        player = self.members.get(viewer)
+        queued = sum(not p.departed and p.pending_buyin > 0 and (p.bot or p.connected)
+                     for p in self.table.players)
+        can_rebuy = bool(player and not player.bot and not player.departed
+                         and player.stack == 0 and not player.pending_buyin
+                         and (self.table.phase in ("waiting", "complete") or not player.in_hand))
         state.update({"room": self.code, "you": viewer, "host": self.host,
                       "botDelayMs": self.bot_delay_ms,
+                      "canRebuy": can_rebuy,
                       "events": self.event_log(), "chat": self.chat_messages[-200:],
                       "canStart": self.table.phase in ("waiting", "complete")
-                      and len(self.table.eligible()) >= 2})
+                      and len(self.table.eligible()) + queued >= 2})
         return state
+
+    def issue_return_key(self, player):
+        key = secrets.token_urlsafe(32)
+        self.return_keys[key] = player.id
+        return key
+
+    def restore_member(self, key):
+        player = self.members.get(self.return_keys.get(key)) if isinstance(key, str) else None
+        if not player or player.bot:
+            raise ValueError("回房凭证无效，请重新加入")
+        if player.departed:
+            if sum(not p.departed for p in self.table.players) >= MAX_PLAYERS:
+                raise ValueError("房间已满（最多 10 人）")
+            if not any(p is player for p in self.table.players):
+                self.table.add(player)
+            player.departed = False
+            player.connected = False
+            if self.table.phase not in ("waiting", "complete"):
+                player.in_hand = False
+                player.folded = True
+                player.cards = []
+            player.last_action = "等待下一局" if self.table.phase not in ("waiting", "complete") else "已回房"
+            self.table.events.append(f"{player.name} 回到房间")
+        return player
+
+    def rebuy(self, pid, amount):
+        player = self.members.get(pid)
+        if not player or player.bot or player.departed or player.stack != 0:
+            raise ValueError("当前不能重新入座")
+        if player.pending_buyin:
+            raise ValueError("已经申请重新入座")
+        if self.table.phase not in ("waiting", "complete") and player.in_hand:
+            raise ValueError("当前仍在牌局中，请等待本局结算")
+        if type(amount) is not int or amount < 5 or amount > 1000 or amount % 5:
+            raise ValueError("带入金额须为 5～1000 元，且为 5 的倍数")
+        if self.table.phase in ("waiting", "complete"):
+            player.stack = amount
+            player.buyin += amount
+            player.last_action = "重新入座"
+            self.table.events.append(f"{player.name} 重新入座，带入 ¥{amount}")
+        else:
+            player.pending_buyin = amount
+            player.last_action = "等待下一局"
+            self.table.events.append(f"{player.name} 已申请下一局重新入座，带入 ¥{amount}")
+
+    def start_hand(self):
+        if self.table.phase not in ("waiting", "complete"):
+            raise ValueError("当前牌局尚未结束")
+        ready = self.table.eligible()
+        pending = [p for p in self.table.players if not p.departed and p.pending_buyin
+                   and (p.bot or p.connected)]
+        if len(ready) + len(pending) < 2:
+            raise ValueError("至少需要两名有筹码的玩家")
+        for player in pending:
+            player.stack = player.pending_buyin
+            player.buyin += player.pending_buyin
+            self.table.events.append(f"{player.name} 重新入座，带入 ¥{player.pending_buyin}")
+            player.pending_buyin = 0
+        self.table.start()
+
+    def ranking(self):
+        players = sorted(self.members.values(), key=lambda p: (p.stack - p.buyin, p.stack, p.name), reverse=True)
+        return [{"rank": index, "name": p.name, "bot": p.bot,
+                 "buyin": p.buyin, "stack": p.stack, "net": p.stack - p.buyin}
+                for index, p in enumerate(players, 1)]
+
+    async def finalize(self):
+        if self.table.phase not in ("waiting", "complete"):
+            raise ValueError("请等待当前牌局结算后再结束游戏")
+        self.closed = True
+        self.table.events.append("房主结束游戏并结算排行")
+        ranking = self.ranking()
+        if self.bot_task and not self.bot_task.done():
+            self.bot_task.cancel()
+            self.bot_task = None
+        sockets = list(self.sockets.values())
+        self.sockets.clear()
+        ROOMS.pop(self.code, None)
+        for token, value in list(SESSIONS.items()):
+            if value[0] == self.code:
+                del SESSIONS[token]
+        for ws in sockets:
+            if not ws.closed:
+                try:
+                    await ws.send_json({"type": "settlement", "ranking": ranking})
+                except ConnectionError:
+                    pass
+        await asyncio.gather(*(ws.close() for ws in sockets if not ws.closed))
 
     async def send_chat(self, pid, text):
         player = next((p for p in self.table.players if p.id == pid and not p.departed), None)
@@ -95,11 +193,13 @@ class Room:
 
     def schedule_bot(self):
         actor = next((p for p in self.table.players if p.id == self.table.turn), None)
-        if actor and actor.bot and (not self.bot_task or self.bot_task.done()):
+        if not self.closed and actor and actor.bot and (not self.bot_task or self.bot_task.done()):
             self.bot_task = asyncio.create_task(self.run_bot())
 
     async def run_bot(self):
         await asyncio.sleep(self.bot_delay_ms / 1000)
+        if self.closed:
+            return
         actor = next((p for p in self.table.players if p.id == self.table.turn), None)
         if not actor or not actor.bot:
             return
@@ -124,6 +224,10 @@ class Room:
         for token, value in list(SESSIONS.items()):
             if value == (self.code, pid):
                 del SESSIONS[token]
+        if reason:
+            for key, member_id in list(self.return_keys.items()):
+                if member_id == pid:
+                    del self.return_keys[key]
         if player.bot and self.bot_task and not self.bot_task.done():
             self.bot_task.cancel()
             self.bot_task = None
@@ -135,11 +239,7 @@ class Room:
             if successor:
                 self.host = successor.id
             else:
-                ROOMS.pop(self.code, None)
-                if self.bot_task:
-                    self.bot_task.cancel()
-                    self.bot_task = None
-                return
+                self.host = pid
         await self.broadcast()
 
 
@@ -193,9 +293,10 @@ async def create(request):
         player = Player(secrets.token_urlsafe(12), name, buyin, buyin)
         room_code = code()
         ROOMS[room_code] = Room(room_code, player)
+        return_key = ROOMS[room_code].issue_return_key(player)
         token = secrets.token_urlsafe(32)
         SESSIONS[token] = (room_code, player.id)
-        return web.json_response({"room": room_code, "token": token})
+        return web.json_response({"room": room_code, "token": token, "returnKey": return_key})
     except ValueError as error:
         return fail(error)
 
@@ -203,18 +304,28 @@ async def create(request):
 async def join(request):
     try:
         data = await read_json(request)
-        name, buyin = validate_player(data)
         room_code = str(data.get("room", "")).strip().upper()
         room = ROOMS.get(room_code)
         if not room:
             raise ValueError("找不到该房间")
-        player = Player(secrets.token_urlsafe(12), name, buyin, buyin)
-        room.table.add(player)
-        room.table.events.append(f"{player.name} 加入房间")
+        return_key = data.get("returnKey")
+        if return_key:
+            player = room.restore_member(return_key)
+        else:
+            name, buyin = validate_player(data)
+            if any(p.name.casefold() == name.casefold() for p in room.members.values()):
+                raise ValueError("该昵称已在房间中使用；原玩家请从同一浏览器返回房间")
+            player = Player(secrets.token_urlsafe(12), name, buyin, buyin)
+            room.table.add(player)
+            room.members[player.id] = player
+            room.table.events.append(f"{player.name} 加入房间")
+            return_key = room.issue_return_key(player)
+        if room.members[room.host].departed:
+            room.host = player.id
         token = secrets.token_urlsafe(32)
         SESSIONS[token] = (room_code, player.id)
         await room.broadcast()
-        return web.json_response({"room": room_code, "token": token})
+        return web.json_response({"room": room_code, "token": token, "returnKey": return_key})
     except ValueError as error:
         return fail(error)
 
@@ -268,13 +379,21 @@ async def websocket(request):
             elif kind == "start":
                 if pid != room.host:
                     raise ValueError("只有房主可以发牌")
-                room.table.start()
+                room.start_hand()
+            elif kind == "rebuy":
+                room.rebuy(pid, data.get("buyin"))
+            elif kind == "settle":
+                if pid != room.host:
+                    raise ValueError("只有房主可以结算")
+                await room.finalize()
+                continue
             elif kind == "bot":
                 if pid != room.host:
                     raise ValueError("只有房主可以添加电脑玩家")
-                number = 1 + sum(p.bot for p in room.table.players)
+                number = 1 + sum(p.bot for p in room.members.values())
                 bot = Player(secrets.token_urlsafe(12), f"电脑玩家 {number}", 1000, 1000, bot=True)
                 room.table.add(bot)
+                room.members[bot.id] = bot
                 room.table.events.append(f"{bot.name} 加入房间")
             elif kind == "bot_speed":
                 if pid != room.host:
@@ -297,26 +416,6 @@ async def websocket(request):
                     raise ValueError("玩家不在房间内")
                 await room.remove_member(target, "你已被房主移出房间")
                 continue
-            elif kind == "restart":
-                if pid != room.host:
-                    raise ValueError("只有房主可以重新开始游戏")
-                # Reset the host and invalidate every other session.
-                for other_id, other_ws in list(room.sockets.items()):
-                    if other_id != pid and not other_ws.closed:
-                        await other_ws.send_json({"type": "kicked", "reason": "房主重新开始了游戏，请重新加入"})
-                        await other_ws.close()
-                for token, value in list(SESSIONS.items()):
-                    if value[0] == room.code and value[1] != pid:
-                        del SESSIONS[token]
-                previous_events = room.table.events[:]
-                player.stack = player.buyin
-                room.table = Table()
-                room.table.add(player)
-                room.table.events = previous_events + ["房主重新开始游戏"]
-                room.sockets = {pid: ws}
-                if room.bot_task:
-                    room.bot_task.cancel()
-                    room.bot_task = None
             else:
                 raise ValueError("未知操作")
             await room.broadcast()

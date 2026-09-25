@@ -78,6 +78,7 @@ class Player:
     last_action: str = ""
     action_seq: int = 0
     departed: bool = False
+    pending_buyin: int = 0
 
 
 class Table:
@@ -335,6 +336,7 @@ class Table:
                 "turn": self.turn, "handNo": self.hand_no,
                 "pot": sum(p.total_bet for p in self.players), "currentBet": self.current_bet,
                 "players": [{"id": p.id, "name": p.name, "stack": p.stack, "buyin": p.buyin,
+                             "pendingBuyin": p.pending_buyin,
                              "bot": p.bot, "connected": p.connected, "inHand": p.in_hand,
                              "folded": p.folded, "allIn": p.all_in, "streetBet": p.street_bet,
                              "totalBet": p.total_bet, "lastAction": p.last_action,
